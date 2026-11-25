@@ -8,3 +8,13 @@
 #include "worse_query.h"
 
 #import "GXEntitlementsReader.h"
+
+#import "GXMobileGestaltImage.h"
+
+#import "GXDeviceIdentity.h"
+#import "GXCustomizationAccess.h"
+
+// Native device console (gx_device_console). Declarations only; the symbols are
+// linked when the app is built with the GXDEVICECONSOLE compilation condition and
+// the GXDeviceConsole xcframework. See Native/DeviceConsole/INTEGRATION.md.
+#import "GXDeviceConsole.h"
