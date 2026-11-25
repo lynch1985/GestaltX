@@ -2,8 +2,70 @@ from pathlib import Path
 import json
 ROOT = Path(__file__).resolve().parents[1]
 TRANSLATIONS = '''
+Enter the notification sound's exact filename, including its extension.	请输入通知铃声的完整文件名，包含扩展名。
+A file with this name already exists. Select it from the list to replace it.	同名文件已存在，请从列表中选择后替换。
+App Sound Library	App 通知音库
+Not every sound listed is the current notification sound. Preview the sounds before replacing one.	列表中的音频不一定是当前通知音，可先试听，确认后再替换。
+Audio replaced.	已替换音频。
+Share Log	分享日志
+No Notification Sounds	未找到通知音
+Play Current Audio	试听当前音频
+Choose Audio	选择音频
+Play Replacement	试听替换音频
+Original audio restored.	已恢复原始音频。
+Some folders could not be read or the scan limit was reached.	部分目录无法读取，或已达到扫描上限。
+Choose notification audio shorter than 30 seconds and smaller than 32 MB.	请选择短于 30 秒且小于 32 MB 的通知音频。
+This audio format is not supported.	不支持此音频格式。
+This format cannot be converted. Import audio with the same format, sample rate and channel count.	此格式暂不支持转换，请导入格式、采样率及声道数相同的音频。
+The app replaced this file. Its existing backup was kept.	该文件已被 App 更新，现有备份已保留。
+The original backup is invalid or belongs to another file. It was kept unchanged.	原始备份无效或属于其他文件，已保持不变。
+Save Current Launch Image	保存当前启动图
+Allow GestaltX to add photos in Settings, then try again.	请在“设置”中允许 GestaltX 添加照片，然后重试。
+The launch image was saved to Photos.	启动图已保存到相册。
+App Launch Images	应用启动图
+No Launch Images	暂无启动图
+Only apps with readable launch images are listed. iOS may refresh these images.	仅显示能读取启动图的 App。iOS 可能会重新生成这些图片。
+Choose Photo	选择照片
+Shown briefly while the app opens. Close the selected app before applying.	仅在 App 启动时短暂显示。应用前请先关闭目标 App。
+The original launch images will be backed up before applying.	应用前会备份原始启动图。
+Only launch images changed by GestaltX will be restored.	仅还原由 GestaltX 修改的启动图。
+Launch image saved. Close and reopen the app to see it.	启动图已保存，请关闭并重新打开该 App 查看。
+Restored. Launch images refreshed by iOS were left unchanged.	已还原；iOS 重新生成的启动图保持不变。
+No launch images found. Open the app once, close it, then read again.	未找到启动图。请先打开该 App 一次，关闭后重新读取。
+The app was reinstalled. Its saved launch images cannot be restored.	该 App 已重新安装，无法还原之前保存的启动图。
+This image could not be used. Choose another image.	无法使用这张图片，请选择其他图片。
+Importing…	正在导入…
+Share one file at a time.	一次仅分享一个文件。
+Choose a MobileGestalt plist or a wallpaper pack.	请选择 MobileGestalt plist 或壁纸包。
+Open GestaltX to confirm importing the wallpaper pack.	打开 GestaltX 以确认导入壁纸包。
+Import this wallpaper pack? It will be added to Wallpaper Settings.	导入这个壁纸包？导入后将添加到“壁纸设置”。
+A shared file is waiting. Save or discard your current changes, then import it.	有分享的文件等待导入，请先保存或放弃当前更改。
+Import a .tendies or .zip wallpaper pack. You can also share it to GestaltX.	导入 .tendies 或 .zip 壁纸包，也可通过分享发送到 GestaltX。
+Applied	已应用
+Customization	个性化
+Import Wallpaper	导入壁纸
+No Wallpapers	暂无壁纸
+Only wallpapers added by this pack will be removed.	仅移除此包添加的壁纸。
+Open Wallpaper Gallery	打开壁纸图库
+Remove this wallpaper pack?	删除这个壁纸包？
+Some files could not be restored. The backup has been kept.	部分文件未能恢复，备份已保留。
+System Settings	系统设置
+The app could not be opened. Open it manually.	未能打开应用，请手动打开。
+The archive contains unsafe paths or links.	压缩包包含不安全的路径或链接。
+The archive is invalid or exceeds the size limit.	压缩包无效或超过大小限制。
+The device container could not be located. Read again.	未能定位设备容器，请重新读取。
+The files changed. Read again before applying.	文件已变化，请重新读取后再应用。
+The original files could not be backed up.	未能备份原始文件。
+This adds new wallpapers without replacing your existing ones.	将添加新壁纸，保留现有壁纸。
+This pack contains no compatible wallpapers.	此包中没有兼容的壁纸。
+This wallpaper was changed outside GestaltX. It was not removed.	壁纸已被其他方式修改，未执行移除。
+Wallpaper added. Open the wallpaper gallery to select it. If it does not appear, restart PosterBoard or respring.	壁纸已添加，请打开图库选择。若未出现，可重新启动 PosterBoard 或执行注销。
+Wallpaper Settings	壁纸设置
+WAPI	WAPI
+Disable WAPI	关闭 WAPI
+Disabling may show a Wi-Fi entry instead of WLAN. Restart to apply.	关闭后可能改为显示 Wi-Fi（而非 WLAN），部分网络选项可能随之变化。重启后生效。
+Restore Original	恢复原值
 Special Thanks	特别鸣谢
-
 Supported	支持
 Unsupported	不支持
 Welcome	欢迎
@@ -17,14 +79,11 @@ Back up your device before making changes, and export a copy of the original pli
 Capability flags cannot add missing hardware. Some changes require a device restart.	功能标记无法增加设备缺少的硬件，部分更改需要重新启动设备才能生效。
 Use only devices you own or are authorized to manage. You are responsible for the changes you choose to apply.	仅在你拥有或获授权管理的设备上使用，并自行承担所选修改带来的风险。
 This software is provided without warranty. Read the included license before use.	本软件不提供任何担保，使用前请阅读随附的开源许可证。
-
 GitHub Repository	GitHub 仓库
-
 Credits & Licenses	鸣谢与许可
 License	许可证
 Respring Technique	注销方法
 Read Again	重新读取
-
 A device restart may be required.	可能需要重新启动设备才能生效。
 Restart the device after changing the region.	更改地区后需要重新启动设备。
 Some changes require a device restart.	部分更改需要重新启动设备。
@@ -32,7 +91,6 @@ Restart required. Apple Intelligence also depends on device and region.	需要�
 Restart the device, then reopen Settings. Pencil hardware support is still required.	重新启动设备后再打开“设置”，仍需要 Apple Pencil 硬件支持。
 Respring first. Restart the device if the change does not appear.	先执行注销，若未生效则重新启动设备。
 Write verified. Some features require a device restart.	写入已验证。部分功能需要重新启动设备才能生效。
-
 Model	机型
 Status	状态
 Connected	已连接
@@ -46,17 +104,14 @@ Apply Changes	应用更改
 Respring Required	需要注销
 Log	日志
 Experimental settings. Back up before applying.	实验性设置，请在应用前备份。
-Read or import a plist in Tools.	在“工具”中读取或导入 plist。
 No Backups	暂无备份
 A backup is created before each write.	每次写入前会自动备份。
 This will attempt to restart SpringBoard using NeoSpring.	将通过 NeoSpring 尝试重新启动 SpringBoard。
 GitHub Projects	GitHub 项目
 GNU GPL v3	GNU GPL v3
-
 Date	日期
 Enter an ISO 8601 date, such as 2026-11-09T12:00:00Z.	请输入 ISO 8601 日期，例如 2026-11-09T12:00:00Z。
 Tools	工具
-Fields	字段
 Backups	备份
 About	关于
 GestaltX	GestaltX
@@ -76,6 +131,7 @@ Original values could not be read. No system changes were made.	无法读取原�
 The original-value record belongs to a different device.	原值记录属于其他设备。
 Original values could not be saved and verified. No system write was started.	无法保存并验证原值记录，未开始写入系统文件。
 The selected added fields must be removed before applying.	请先移除选中的新增字段，再应用更改。
+Device identity fields cannot be changed in the system plist. Open a local file to edit these fields.	不能更改系统 plist 中的设备身份字段。如需编辑这些字段，请打开本地文件。
 Keep Current	保持当前值
 Display	显示
 Device	设备
@@ -239,6 +295,7 @@ Changes verified on device. Respring to refresh supported features.	本机更改
 Local changes saved. Export the plist to keep a copy.	本地更改已保存，请导出 plist 以保留副本。
 Backup saved	备份已保存
 Backup restored and verified.	备份已恢复并通过验证。
+This backup already matches the device. No changes were made.	此备份已与设备一致，未作任何更改。
 Backup opened as a local document.	已将备份打开为本地文稿。
 Manual backup	手动备份
 Before editing	编辑前备份
@@ -268,7 +325,7 @@ That key already exists. Edit the existing field instead.	此键名已存在，�
 Enter a model name before applying.	请先输入机型名称再应用。
 A little more possibility.	多一点可能。
 More Projects by huamidev	huamidev 的更多项目
-Minimum OS	最低系统版本
+Supported OS	支持系统
 Languages	语言
 Compatibility	兼容性
 Credits	鸣谢
@@ -297,11 +354,174 @@ Respring did not finish.	注销未完成。
 Refreshing SpringBoard…	正在刷新 SpringBoard…
 This OS build may not support the technique. You can close this screen and try a manual restart later.	当前系统版本可能不支持此方法。你可以关闭此页面，稍后手动重新启动设备。
 Your device may briefly return to the Lock Screen.	设备可能会短暂返回锁定屏幕。
-FaceTime Audio	FaceTime 音频
-FaceTime Audio supports iPhone 17 Pro on iOS 27.3 (24C5037i).	此选项支持运行 iOS 27.3（24C5037i）的 iPhone 17 Pro。
-The FaceTime Audio cache layout or values do not match the verified profile.	FaceTime 音频缓存的布局或数值与已验证配置不符。
-The FaceTime Audio edit changes unrelated cache bytes.	FaceTime 音频更改包含无关的缓存字节。
-FaceTime Audio flags written and verified. Restart the iPhone, then test an audio call.	FaceTime 音频标记已写入并验证。请重新启动 iPhone，再测试音频通话。
+The cache layout or values do not match this preset.	缓存布局或数值与此预设不符。
+The original value belongs to a different cache layout. A matching backup is needed to restore it.	原值属于不同的缓存布局，需要匹配的备份才能恢复。
+This preset changes unrelated cache bytes.	此预设更改了无关的缓存字节。
+Unable to resolve this device's MobileGestalt cache layout.	无法解析此设备的 MobileGestalt 缓存布局。
+Importing Plist…	正在导入 plist…
+Share one MobileGestalt plist at a time.	请每次分享一个 MobileGestalt plist 文件。
+Sign GestaltX and its share extension with the same App Group, then try again.	请为 GestaltX 和分享扩展签入同一个 App Group 后重试。
+The shared plist could not be read. Share it again.	无法读取分享的 plist，请重新分享。
+A shared plist is waiting. Save or discard your current changes, then import it.	有分享的 plist 等待导入，请先保存或放弃当前更改。
+Save or discard your current changes before opening another plist.	请先保存或放弃当前更改，再打开另一个 plist。
+Import	导入
+Open GestaltX to confirm importing the plist.	请打开 GestaltX 确认导入 plist。
+This device's identity could not be verified. Read MobileGestalt on this device and try sharing again.	无法核验本机身份，请先读取本机 MobileGestalt 后重新分享。
+This plist belongs to another device and cannot be imported.	此 plist 的设备标识与本机不符，无法导入。
+This plist does not contain enough device identifiers to verify ownership.	此 plist 缺少足够的设备标识，无法确认属于本机。
+Additional Options	附加选项
+MG Control	MG 控制
+Read MobileGestalt in Tools, or share this device's plist to GestaltX.	在工具中读取 MobileGestalt，或将本机 plist 分享到 GestaltX。
+This plist has been verified for this device. Import it?	已核验此 plist 属于本机，是否导入？
+This plist's device proof could not be verified on this device.	无法在本机验证此 plist 的设备凭证。
+The device proof is temporarily unavailable. Unlock this device and try again.	设备凭证暂时不可用。请解锁此设备后重试。
+This plist uses a different system cache layout and cannot be restored.	此 plist 的系统缓存布局与本机不符，无法恢复。
+Restore Imported Plist	恢复导入的 plist
+The current device file will be backed up before restoring. Restart the device afterward.	恢复前会备份当前设备文件，完成后请重启设备。
+Share this device's plist to GestaltX to edit its keys and values or restore a verified backup. Export a copy from GestaltX first to keep a device-bound proof.	现在可将本机 plist 分享到 GestaltX，核验后导入、增删改键值并恢复。建议先从 GestaltX 导出一份带本机校验凭证的备份。
+Canada	加拿大
+Model Number	型号号码
+A device restart may be required after changing the model number.	修改型号号码后可能需要重启设备。
+Listed values apply to iPhone Air, iPhone 18 Pro and iPhone 18 Pro Max only. Choosing a model number that does not match your hardware can make verification tools report a mismatch.	以下号码仅适用于 iPhone Air、iPhone 18 Pro 和 iPhone 18 Pro Max。选择与硬件不符的号码，可能导致验机工具报告不匹配。
+A3260 — Air · United States / Canada	A3260 — Air · 美国／加拿大
+A3516 — Air · Japan	A3516 — Air · 日本
+A3517 — Air · Other regions	A3517 — Air · 其他地区
+A3518 — Air · China mainland	A3518 — Air · 中国大陆
+A3472 — 18 Pro · United States	A3472 — 18 Pro · 美国
+A3713 — 18 Pro · Canada / Japan	A3713 — 18 Pro · 加拿大／日本
+A3714 — 18 Pro · Other regions	A3714 — 18 Pro · 其他地区
+A3715 — 18 Pro · China mainland	A3715 — 18 Pro · 中国大陆
+A3473 — 18 Pro Max · United States	A3473 — 18 Pro Max · 美国
+A3716 — 18 Pro Max · Canada / Japan	A3716 — 18 Pro Max · 加拿大／日本
+A3717 — 18 Pro Max · Other regions	A3717 — 18 Pro Max · 其他地区
+A3718 — 18 Pro Max · China mainland	A3718 — 18 Pro Max · 中国大陆
+The artwork field is not a dictionary. Edit it in MG Control before using these presets.	artwork 字段不是字典，请先在 MG 控制中编辑此字段，再使用这些预设。
+High-Luminance Always-On Display	高亮度始终显示
+Allow Always-On Display to reach a higher brightness level.	允许“始终显示”达到更高亮度。
+Always-On Display Flipbook	始终显示翻页组件
+Enable AOD flipbook widgets on the Lock Screen.	在锁屏上启用 AOD 翻页小组件。
+AOD Flipbook Count	AOD 翻页数量
+Set how many AOD flipbook entries are allowed. Experimental; the accepted range varies by build.	设置允许的 AOD 翻页条目数量。实验性功能，可用范围因系统版本而异。
+Disable Wallpaper Parallax	关闭壁纸视差
+Stop the wallpaper from moving with device motion.	停止壁纸随设备移动产生位移。
+HDR Photo Display	HDR 照片显示
+Enable true HDR rendering for photos.	为照片启用真正的 HDR 渲染。
+Pulse Width Modulation	脉宽调制 (PWM)
+Advertise PWM display support. Actual dimming behavior depends on the panel.	声明支持 PWM 调光。实际调光行为取决于屏幕面板。
+DisplayPort Output	DisplayPort 输出
+Advertise DisplayPort output support. Compatible hardware is still required.	声明支持 DisplayPort 输出，仍需要兼容硬件。
+Collision SOS	车祸检测 SOS
+Show collision detection in Emergency SOS settings. Hardware support is still required.	在“紧急 SOS”设置中显示车祸检测，仍需要硬件支持。
+Audio Mix	音频混音
+Enable the audio mix capability for supported media.	为支持的媒体启用音频混音能力。
+Spatial FaceTime Audio	FaceTime 空间音频
+Enable spatial audio playback for FaceTime.	为 FaceTime 启用空间音频播放。
+Internal Settings Bundle	内部设置包
+Expose Apple's internal settings bundle. Some system services may behave differently.	显示 Apple 内部设置包。部分系统服务可能表现异常。
+On-Device Siri	端侧 Siri
+Siri uses a device-specific capability type. Changing it may affect the Apple Intelligence Siri interface. Keep the current value or restore the recorded original.	Siri 使用机型相关的能力类型。修改此类型可能影响 Apple 智能 Siri 界面。请选择保持当前值或还原已记录的原始值。
+Audio Intelligence	音频智能
+Advertise the iOS 27 audio intelligence capability.	声明 iOS 27 音频智能能力。
+Personal Translator	个人翻译
+Advertise the personal translator capability.	声明个人翻译能力。
+Photos Clean Up	照片消除
+Advertise the photos inpainting (Clean Up) capability.	声明照片物体清除与修复功能。
+Handwriting Synthesis	手写合成
+Advertise the handwriting synthesis model capability.	声明手写合成模型能力。
+Always-Listening Hey Siri	常听 Hey Siri
+Advertise always-listening Hey Siri support.	声明支持常听 Hey Siri。
+Internal Build	内部构建
+Changes the system-wide InternalBuild flag, not just storage information. System services may behave differently. Revert restores the recorded original value.	修改系统全局的 InternalBuild 标记，并非仅调整存储信息。系统服务的行为可能发生变化。“还原”会恢复已记录的原始值。
+Enable Internal Build?	启用内部构建？
+This stages the system-wide InternalBuild flag. It can affect system services beyond the storage screen. You can review the change before applying it.	这会暂存系统全局的 InternalBuild 标记变更。它可能影响存储页面以外的系统服务。你可以在应用前检查这项变更。
+Lock Screen Text	锁屏底部文字
+Add your own text at the bottom of the Lock Screen.	在锁屏底部显示自定义文字。
+System Default	系统默认
+Empty	空
+Current Value	当前值
+Unavailable	无法访问
+Your lock screen text	输入锁屏文字
+Original values are saved before writing. Revert removes keys that were originally absent.	写入前会保存原值，原本不存在的键会在还原时移除。
+The affected settings files will be backed up before writing. You can restore each option afterward.	写入前会备份相关设置文件，之后可逐项还原。
+The system settings file is not a valid dictionary.	系统设置文件不是有效的字典，已停止操作。
+System settings changed. Read them again before applying.	系统设置已发生变化，请重新读取后再应用。
+Use a single line of up to 256 characters.	请输入单行文字，最多 256 个字符。
+The settings backup could not be verified. No changes were applied.	无法验证设置备份，未应用任何更改。
+System settings could not be verified after writing.	写入后无法验证系统设置。
+Some settings could not be restored automatically. Read them again and use Revert.	部分设置未能自动恢复，请重新读取并使用“还原”。
+These system settings are not accessible on this device.	当前设备无法访问这些系统设置。
+Lock screen text updated.	锁屏文字已更新。
+Capture	采集
+Pairing	配对
+Pairing Code	配对码
+Pairing failed.	配对失败。
+Start Pairing	开始配对
+Forget Pairing	解除配对
+Start Capture	开始采集
+Stop Capture	停止采集
+Capture stopped.	采集已停止。
+Capturing…	正在采集…
+Captured	已采集
+Captured Notification Sounds	已采集的通知音
+File	文件
+Source	来源
+System default (not replaceable)	系统默认（不可替换）
+Enter this code on the device to confirm pairing.	在设备上输入这串配对码即可完成配对。
+Another pairing or capture is already running.	已有配对或采集正在进行。
+The device console is not available in this build.	此版本未启用设备控制台。
+Build the GXDeviceConsole library and enable it to use pairing and capture.	需要构建并启用 GXDeviceConsole 库后才能配对和采集。
+Pair this device once in Settings › Privacy & Security › Developer Mode › Pair with the broadcast host. The exact path can vary by iOS version.	在“设置 › 隐私与安全性 › 开发者模式 › 与广播的主机配对”中配对一次。具体路径因 iOS 版本而异。
+Start a loopback VPN (e.g. LocalDevVPN), then start capture and trigger a notification in the target app.	先打开回路 VPN（如 LocalDevVPN），再开始采集，然后在目标 App 里触发一条通知。
+These filenames were captured from notifications. Add a same-name audio to override them.	这些文件名来自通知采集。添加同名音频即可覆盖。
+A same-name audio will be written to this app's Library/Sounds so the system uses it instead of the bundled sound.	会在该 App 的 Library/Sounds 写入同名音频，系统会优先使用它，而不是包内音频。
+Restore Original Audio	还原原始音频
+Restore Audio	还原音频
+Loopback VPN	回路 VPN
+Open LocalDevVPN	打开 LocalDevVPN
+Not checked	尚未检测
+Checking…	正在检测…
+Not reachable	不可达
+Loopback VPN is not reachable. Open LocalDevVPN, wait until it connects, then try again.	回路 VPN 不可达。请打开 LocalDevVPN，等它连接成功后重试。
+The saved pairing file is missing. Pair this iPhone again before capturing.	配对文件不见了，请重新配对这个 iPhone 再开始采集。
+Device Pairing	设备配对
+Pairing & Device Connection	配对与设备连接
+App Audio Library	应用音频库
+Apps that already have notification sounds or audio files	这里列出包含通知音或音频文件的 App
+Capture Notification Sounds	采集通知音
+Pairing is in progress. Finish it in Tools → Device Pairing.	正在配对，请到「工具 → 设备配对」里完成。
+Open Device Pairing	去设备配对
+Existing Audio	已有音频
+Captured Apps	已采集的 App
+Delete Capture	删除采集记录
+No saved original was found for this sound. The app may have replaced it after the last edit.	找不到这个音频的原始备份，App 可能在编辑后替换了它。
+Pair once before capturing.	采集前先配对一次。
+GestaltX Pairing	GestaltX 配对
+Broadcasting as GestaltX	GestaltX 正在广播
+Privacy & Security → Developer Mode	隐私与安全性 → 开发者模式
+Open Settings	前往设置
+Pair this iPhone once	这台 iPhone 只需配对一次
+Tap Pair with GestaltX	点按“与 GestaltX 配对”
+Enter the 6-digit code shown below, in the Dynamic Island, or in the notification	输入下方、灵动岛或通知里显示的 6 位配对码
+The pairing code appears here, in the Dynamic Island, and as a notification.	配对码会显示在这里，也会出现在灵动岛和通知里。
+Enter this code in Settings to finish pairing.	在“设置”里输入这串配对码即可完成配对。
+Copy Code	复制配对码
+Copied	已复制
+Dynamic Island + notification	灵动岛 + 通知
+iOS could not start the background pairing task. Keep GestaltX open, or try again in a moment.	iOS 没能启动后台配对任务。请保持 GestaltX 在前台，或稍后重试。
+Siri AI Mode	Siri AI 模式
+Set SiriMode to 2 without spoofing hardware. Experimental; resource downloads and availability are not guaranteed.	将 SiriMode 设为 2，不伪装硬件。此功能为实验性质，不保证资源下载或功能可用。
+Restore Hardware Identity	恢复硬件身份
+Restore only the original product, board, CPU and model number from this backup. AI and region settings are kept. Restart and test Face ID and dictation afterward.	仅从此备份恢复原始产品标识、板号、CPU 和监管型号，保留 AI 与地区设置。随后请完整重启并测试 Face ID 与听写。
+A verified original hardware backup matching this device and cache is required.	需要经过验证且与当前设备和缓存匹配的原始硬件备份。
+This only deletes the imported pack from GestaltX. Applied wallpapers will be kept.	只从 GestaltX 删除导入包，已应用的壁纸会保留。
+Delete the imported wallpaper pack?	删除导入的壁纸包？
+Enjoying GestaltX?	喜欢 GestaltX 吗？
+If GestaltX is useful to you, a GitHub star helps a lot.	如果它对你有帮助，去 GitHub 点个 Star 支持一下。
+Star on GitHub	去 GitHub 点 Star
+Maybe Later	以后再说
+Don't Ask Again	不再提醒
+Cannot reach the device console. Open LocalDevVPN, wait for it to connect, then try again.	无法连接设备控制台。请打开 LocalDevVPN，等它连接成功后重试。
+If this stays here, open LocalDevVPN and wait for it to finish connecting.	如果一直停在这里，请打开 LocalDevVPN，等它连接完成。
 '''
 entries = {}
 for line in TRANSLATIONS.strip().splitlines():

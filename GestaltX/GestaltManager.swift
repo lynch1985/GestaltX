@@ -4,6 +4,14 @@ import Foundation
 import SwiftUI
 import Combine
 
+struct PlistImportOffer: Identifiable {
+    let id = UUID()
+    let data: Data
+    let name: String
+    let identity: DevicePlistIdentity?
+    let sharedSource: (SharedPlistInbox, SharedPlistEntry)?
+}
+
 @MainActor
 final class GestaltManager: ObservableObject {
     @Published private(set) var snapshot: DocumentSnapshot?
@@ -19,10 +27,12 @@ final class GestaltManager: ObservableObject {
     @Published var choices: [String: PresetChoice] = [:]
     @Published var regionID = "keep"
     @Published var regionCodeID = "keep"
+    @Published var modelID = "keep"
     @Published var changesName = false
     @Published var modelName = ""
     @Published var subtype = 0
-    @Published private(set) var faceTimeAudioChoice: FaceTimeAudioChoice = .keep
+    @Published private(set) var wapiChoice: WAPIChoice = .keep
+    @Published private(set) var cacheOptionChoice: CacheOptionChoice = .keep
     private let files: GestaltFileStore
     private var exploitLogObserver: NSObjectProtocol?
 
@@ -37,16 +47,30 @@ final class GestaltManager: ObservableObject {
             #if targetEnvironment(simulator)
             throw GestaltFailure("Device access is unavailable in the Simulator. Open a plist to explore GestaltX.")
             #else
-            guard let signedGroup = GXEntitlementsReader.usableAppGroup() else {
+            let target = (GestaltKeys.devicePath as NSString).deletingLastPathComponent
+            let signedGroups = GXEntitlementsReader.usableAppGroups()
+            guard !signedGroups.isEmpty else {
                 throw GestaltFailure("The signed app has no usable App Group. Enable its App Group capability and sign it again.")
             }
-            let handle = worse_query((GestaltKeys.devicePath as NSString).deletingLastPathComponent,
-                                     signedGroup, false, false)
-            guard handle >= 0 else {
-                if handle == -1 { throw GestaltFailure("The signed app has no usable App Group. Enable its App Group capability and sign it again.") }
-                throw GestaltFailure("MobileGestalt access was denied. Check the OS version and App Group signing.")
+            // Re-signed certificates often carry several App Groups and only some of
+            // them hold a usable container, so try each one instead of trusting one.
+            var rejection: Int64 = -1
+            for signedGroup in signedGroups {
+                var handle = worse_query(target, signedGroup, false, false)
+                if handle == -4, let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: signedGroup) {
+                    // The exploit swaps Library/Caches for a symlink, so a container
+                    // without Library fails until the directory exists.
+                    try? FileManager.default.createDirectory(at: root.appendingPathComponent("Library/Caches"),
+                                                             withIntermediateDirectories: true)
+                    handle = worse_query(target, signedGroup, false, false)
+                }
+                if handle >= 0 { return handle }
+                rejection = handle
             }
-            return handle
+            if rejection == -1 {
+                throw GestaltFailure("The signed app has no usable App Group. Enable its App Group capability and sign it again.")
+            }
+            throw GestaltFailure("MobileGestalt access was denied. Check the OS version and App Group signing.")
             #endif
         }, release: { worse_query_release($0) }, eventSink: { text in
             NotificationCenter.default.post(name: Notification.Name("GestaltX.worse_query.log"), object: nil,
@@ -72,11 +96,15 @@ final class GestaltManager: ObservableObject {
     }
     var cacheDataChanges: [CachedBooleanChange] {
         guard let original = snapshot?.document, let edited = preview else { return [] }
-        return FaceTimeAudioCache.changes(from: original, to: edited)
+        return DeviceCacheOptions.changes(from: original, to: edited)
     }
     var changeCount: Int { changeKeys.count + cacheDataChanges.count }
     var hasDocument: Bool { snapshot != nil }
     var sourceIsDevice: Bool { snapshot?.source == .device }
+    var artworkEditingError: GestaltFailure? {
+        guard let working, !working.canEditArtwork else { return nil }
+        return GestaltFailure("The artwork field is not a dictionary. Edit it in MG Control before using these presets.")
+    }
     var displayedName: String {
         working?.artwork["ArtworkDeviceProductDescription"] as? String ?? working?.extra["Z/dqyWS6OZTRy10UcmUAhw"] as? String ?? UIDevice.current.model
     }
@@ -85,17 +113,16 @@ final class GestaltManager: ObservableObject {
         for capability in Capability.all {
             capability.apply(choices[capability.id] ?? .keep, to: &doc, restoringFrom: snapshot)
         }
-        if subtype != 0 {
-            doc.setArtwork(NSNumber(value: subtype), for: "ArtworkDeviceSubType")
+        if subtype != 0, doc.setArtwork(NSNumber(value: subtype), for: "ArtworkDeviceSubType") {
             doc.set(NSNumber(value: true), for: "YlEtTtHlNesRBMal1CqRaA")
         }
-        if changesName {
-            doc.setArtwork(modelName.trimmingCharacters(in: .whitespacesAndNewlines), for: "ArtworkDeviceProductDescription")
+        if changesName, doc.setArtwork(modelName.trimmingCharacters(in: .whitespacesAndNewlines), for: "ArtworkDeviceProductDescription") {
             doc.set(modelName.trimmingCharacters(in: .whitespacesAndNewlines), for: "Z/dqyWS6OZTRy10UcmUAhw")
             doc.set(modelName.trimmingCharacters(in: .whitespacesAndNewlines), for: "bbtR9jQx50Fv5Af/affNtA")
         }
         doc.applyRegion(salesRegion: RegionPreset.all.first { $0.id == regionID },
                         regionCode: RegionPreset.all.first { $0.id == regionCodeID })
+        doc.applyModel(ModelPreset.all.first { $0.id == modelID })
         return doc
     }
 
@@ -107,58 +134,76 @@ final class GestaltManager: ObservableObject {
     private func failed(_ error: Error) { message = error.localizedDescription; log(error.localizedDescription) }
     private func accept(_ loaded: DocumentSnapshot) {
         snapshot = loaded; working = loaded.document
-        choices = [:]; regionID = "keep"; regionCodeID = "keep"; changesName = false; subtype = 0
-        faceTimeAudioChoice = .keep
+        choices = [:]; regionID = "keep"; regionCodeID = "keep"; modelID = "keep"; changesName = false; subtype = 0
+        cacheOptionChoice = .keep
+        wapiChoice = .keep
         modelName = loaded.document.artwork["ArtworkDeviceProductDescription"] as? String ?? ""
     }
     func clearStaged() {
         if let snapshot { accept(snapshot) }
     }
 
-    func stageFaceTimeAudio(_ choice: FaceTimeAudioChoice) {
+    func stageCacheOption(_ choice: CacheOptionChoice) {
         guard !isBusy, var document = working, let snapshot else { return }
         do {
-            let flags: FaceTimeAudioFlags
+            let flags: CachedOptionFlags
             switch choice {
-            case .keep: flags = try FaceTimeAudioCache.flags(in: snapshot.document)
+            case .keep: flags = try DeviceCacheOptions.flags(in: snapshot.document)
             case .enable: flags = .enabled
-            case .restoreOriginal: flags = try snapshot.originalFaceTimeAudioFlags()
+            case .restoreOriginal: flags = try snapshot.originalCachedOptionFlags()
             }
-            try document.setFaceTimeAudio(flags)
+            try document.setCacheOptions(flags)
             working = document
-            faceTimeAudioChoice = choice
+            cacheOptionChoice = choice
         } catch { failed(error) }
     }
 
-    var canRestoreFaceTimeAudio: Bool {
-        guard !isBusy, let snapshot, let working,
-              let original = try? snapshot.originalFaceTimeAudioFlags(),
-              let current = try? FaceTimeAudioCache.flags(in: working) else { return false }
-        return faceTimeAudioChoice != .keep || current != original
+    func stageWAPI(_ choice: WAPIChoice) {
+        guard !isBusy, var document = working, let snapshot else { return }
+        do {
+            let value: Bool
+            switch choice {
+            case .keep: value = try DeviceCacheOptions.wapi(in: snapshot.document)
+            case .disable: value = false
+            case .restoreOriginal: value = try snapshot.originalWAPI()
+            }
+            try document.setWAPI(value)
+            working = document
+            wapiChoice = choice
+        } catch { failed(error) }
     }
 
-    func restoreFaceTimeAudio() async {
+    var canRestoreCacheOption: Bool {
+        guard !isBusy, let snapshot, let working,
+              let original = try? snapshot.originalCachedOptionFlags(),
+              let current = try? DeviceCacheOptions.flags(in: working) else { return false }
+        return cacheOptionChoice != .keep || current != original
+    }
+
+    func restoreCacheOption() async {
         guard !isBusy, let before = snapshot, let pending = working else { return }
         isBusy = true
         defer { isBusy = false }
         do {
             var restored = before.document
-            try restored.setFaceTimeAudio(before.originalFaceTimeAudioFlags())
+            try restored.setCacheOptions(before.originalCachedOptionFlags())
             let result: DocumentSnapshot
             if restored.matches(before.document) {
                 result = before
             } else {
-                logChanges(from: before.document, to: restored, prefix: "[restore-facetime] ")
+                logChanges(from: before.document, to: restored, prefix: "[restore-option] ")
                 result = try await files.commit(restored, expected: before)
                 needsRespring = result.source == .device
                 message = L(result.source == .device
-                            ? "FaceTime Audio flags written and verified. Restart the iPhone, then test an audio call."
+                            ? "Write verified. Some features require a device restart."
                             : "Local changes saved. Export the plist to keep a copy.")
             }
             snapshot = result
             working = before.rebasingPendingEdits(pending, onto: result.document, excluding: [], preservingCacheData: false)
-            faceTimeAudioChoice = .keep
-            log("[restore-facetime] " + L("Original values restored."))
+            if let value = try? DeviceCacheOptions.wapi(in: pending),
+               (try? DeviceCacheOptions.wapi(in: before.document)) != value { try working?.setWAPI(value) }
+            cacheOptionChoice = .keep
+            log("[restore-option] " + L("Original values restored."))
             await reloadBackups()
         } catch { failed(error); await reloadBackups() }
     }
@@ -167,6 +212,12 @@ final class GestaltManager: ObservableObject {
         guard !isBusy, let snapshot, let working else { return false }
         if (choices[capability.id] ?? .keep) != .keep { return true }
         if capability.id == "dynamicIsland" && subtype != 0 { return true }
+        if capability.id == "dynamicIsland" {
+            var restored = working
+            capability.restoreDynamicIslandLayout(in: &restored, from: snapshot)
+            if !restored.matches(working) { return true }
+        }
+        if capability.id == ModelPreset.restoration.id && modelID != "keep" { return true }
         return capability.keys.contains { key in
             switch (snapshot.originalValue(for: key), working.extra[key]) {
             case (nil, nil): false
@@ -195,9 +246,12 @@ final class GestaltManager: ObservableObject {
                 message = L(result.source == .device ? "Original values restored." : "Local changes saved. Export the plist to keep a copy.")
             }
             snapshot = result
-            working = before.rebasingPendingEdits(pending, onto: result.document, excluding: Set(capability.keys))
+            var rebased = before.rebasingPendingEdits(pending, onto: result.document, excluding: Set(capability.keys))
+            capability.restoreDynamicIslandLayout(in: &rebased, from: before)
+            working = rebased
             choices[capability.id] = .keep
             if capability.id == "dynamicIsland" { subtype = 0 }
+            if capability.id == ModelPreset.restoration.id { modelID = "keep" }
             log("[restore-field] " + L(capability.title) + ": " + L("Original values restored."))
             await reloadBackups()
         } catch { failed(error); await reloadBackups() }
@@ -214,20 +268,40 @@ final class GestaltManager: ObservableObject {
     }
 
     private func diffLines(_ before: [String: Any], _ after: [String: Any], prefix: String = "") -> [String] {
+        enum Difference { case line(String), nested([String]) }
+        var changes: [(key: String, value: Difference)] = []
+        func path(_ key: String) -> String { prefix.isEmpty ? key : prefix + "." + key }
+        var matched = 0
+        for (key, oldValue) in before {
+            guard let newValue = after[key] else {
+                changes.append((key, .line("- \(path(key))  (was \(describe(oldValue)))")))
+                continue
+            }
+            matched += 1
+            if let oldDict = oldValue as? [String: Any], let newDict = newValue as? [String: Any] {
+                // Recursion identifies changed members directly; comparing
+                // the whole dictionary first would traverse it again.
+                let nested = diffLines(oldDict, newDict, prefix: path(key))
+                if !nested.isEmpty { changes.append((key, .nested(nested))) }
+            } else if !GestaltDocument.valuesEqual(oldValue, newValue) {
+                changes.append((key, .line("~ \(path(key)): \(describe(oldValue)) → \(describe(newValue))")))
+            }
+        }
+        // A second walk is needed only if some destination keys were not
+        // encountered above. Ordinary value edits have no added keys.
+        if matched < after.count {
+            for (key, value) in after where before[key] == nil {
+                changes.append((key, .line("+ \(path(key)) = \(describe(value))")))
+            }
+        }
+        // Preserve the existing depth-first key order, sorting only branches
+        // that actually produced log messages.
+        changes.sort { $0.key < $1.key }
         var lines: [String] = []
-        for key in Set(before.keys).union(after.keys).sorted() {
-            let path = prefix.isEmpty ? key : prefix + "." + key
-            switch (before[key], after[key]) {
-            case (nil, let value?): lines.append("+ \(path) = \(describe(value))")
-            case (let value?, nil): lines.append("- \(path)  (was \(describe(value)))")
-            case (let oldValue?, let newValue?):
-                guard !GestaltDocument.valuesEqual(oldValue, newValue) else { continue }
-                if let oldDict = oldValue as? [String: Any], let newDict = newValue as? [String: Any] {
-                    lines.append(contentsOf: diffLines(oldDict, newDict, prefix: path))
-                } else {
-                    lines.append("~ \(path): \(describe(oldValue)) → \(describe(newValue))")
-                }
-            default: break
+        for (_, difference) in changes {
+            switch difference {
+            case .line(let line): lines.append(line)
+            case .nested(let nested): lines.append(contentsOf: nested)
             }
         }
         return lines
@@ -236,6 +310,12 @@ final class GestaltManager: ObservableObject {
     private func summarize(_ document: GestaltDocument) -> [String] {
         var lines = ["CacheExtra: \(document.extra.count) keys"]
         if let cacheData = document.root["CacheData"] as? Data { lines.append("CacheData: \(cacheData.count) bytes") }
+        do {
+            let layout = try MobileGestaltCacheLayout.resolve(in: document)
+            lines.append("Cache layout: \(layout.uuid), \(layout.slotCount) slots")
+            lines.append(String(format: "green-tea: index %d, offset 0x%X; not-green-tea: index %d, offset 0x%X",
+                                layout.greenTeaIndex, layout.greenTeaOffset, layout.notGreenTeaIndex, layout.notGreenTeaOffset))
+        } catch { lines.append("Cache offsets: " + error.localizedDescription) }
         if let model = document.artwork["ArtworkDeviceProductDescription"] as? String { lines.append("model name: \(model)") }
         if let subtype = document.artwork["ArtworkDeviceSubType"] { lines.append("subtype: \(describe(subtype))") }
         if let region = document.extra[GestaltKeys.regionCode] as? String { lines.append("region code: \(region)") }
@@ -248,7 +328,7 @@ final class GestaltManager: ObservableObject {
 
     private func logChanges(from original: GestaltDocument, to edited: GestaltDocument, prefix: String) {
         for line in diffLines(original.root, edited.root) { log(prefix + line) }
-        for change in FaceTimeAudioCache.changes(from: original, to: edited) {
+        for change in DeviceCacheOptions.changes(from: original, to: edited) {
             log(prefix + "CacheData.\(change.name) @\(String(format: "0x%X", change.offset)): \(change.before) → \(change.after)")
         }
     }
@@ -271,6 +351,7 @@ final class GestaltManager: ObservableObject {
         await reloadBackups()
     }
 
+    #if targetEnvironment(simulator)
     func open(_ url: URL) async {
         guard !isBusy else { return }
         isBusy = true
@@ -288,30 +369,149 @@ final class GestaltManager: ObservableObject {
         } catch { failed(error) }
     }
 
+    #endif
+
+    private func verifyImport(_ bytes: Data) async throws -> (Data, DevicePlistIdentity?) {
+        if let payload = try DeviceBoundPlist.verifiedPayload(bytes) { return (payload, nil) }
+        let incoming = try DevicePlistIdentity(plist: bytes)
+        guard incoming.values.count >= 2 else { throw DevicePlistIdentity.incomplete }
+        let empty = try DevicePlistIdentity(properties: [:])
+        var trusted = (try? DevicePlistIdentity(properties: GXCopyCurrentDeviceIdentity())) ?? empty
+        if trusted.values.count >= 2 {
+            do { try incoming.requireMatch(with: trusted); return (bytes, trusted) }
+            catch let error as SharedPlistError where error.key == DevicePlistIdentity.mismatch.key { throw error }
+            catch { /* The cache may provide an additional identifier. */ }
+        }
+        // Only a fresh read from the actual device path is a trusted fallback.
+        // Previously imported documents and user-provided backups are never used.
+        do {
+            let live = try await files.loadDevice()
+            trusted = try trusted.mergingTrusted(DevicePlistIdentity(properties: live.document.extra))
+        } catch { throw DevicePlistIdentity.unavailable }
+        try incoming.requireMatch(with: trusted)
+        return (bytes, trusted)
+    }
+
+    func prepareSharedPlist(_ entry: SharedPlistEntry, from inbox: SharedPlistInbox) async -> SharedImportPreparation<PlistImportOffer> {
+        guard !isBusy, changeCount == 0 else { return .deferred(nil) }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let bytes = try await inbox.readAsync(entry)
+            let (payload, identity) = try await verifyImport(bytes)
+            try Task.checkCancellation()
+            log("[share] Device ownership verified; waiting for import confirmation")
+            return .ready(PlistImportOffer(data: payload, name: entry.name, identity: identity, sharedSource: (inbox, entry)))
+        } catch is CancellationError {
+            return .deferred(nil)
+        } catch {
+            // Retry only known access/service failures, not invalid content.
+            log("[share] " + error.localizedDescription)
+            if !inbox.reject(entry, after: error) {
+                return .deferred(error.localizedDescription)
+            }
+            return .rejected(error.localizedDescription)
+        }
+    }
+
+    func prepareFileImport(_ url: URL) async -> PlistImportOffer? {
+        guard !isBusy, changeCount == 0 else { return nil }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let bytes = try await SharedPlistInbox.readDocumentAsync(at: url)
+            let (payload, identity) = try await verifyImport(bytes)
+            try Task.checkCancellation()
+            return PlistImportOffer(data: payload, name: url.lastPathComponent, identity: identity, sharedSource: nil)
+        } catch is CancellationError { return nil }
+        catch { failed(error); return nil }
+    }
+
+    func acceptImport(_ offer: PlistImportOffer) async {
+        guard !isBusy, changeCount == 0 else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            // Use the immutable bytes that were verified for this confirmation.
+            if let identity = offer.identity { try DevicePlistIdentity(plist: offer.data).requireMatch(with: identity) }
+            var loaded = try await files.loadLocal(data: offer.data, name: offer.name)
+            loaded.ownershipVerified = true
+            accept(loaded); status = "Local file opened"; needsRespring = false
+            discardImport(offer)
+            log("[share] Verified device plist imported: \(offer.data.count) bytes")
+        } catch { failed(error) }
+    }
+
+    var canRestoreImportedPlist: Bool {
+        snapshot?.source == .local && snapshot?.ownershipVerified == true && changeCount == 0 && !isBusy
+    }
+    func restoreImportedPlist() async {
+        guard canRestoreImportedPlist, let imported = snapshot else { return }
+        isBusy = true; defer { isBusy = false }
+        do {
+            let live = try await files.loadDevice()
+            let restored = try await files.restoreVerifiedImport(imported, expected: live)
+            let changed = !restored.document.matches(live.document)
+            accept(restored); needsRespring = needsRespring || changed
+            status = "Changes verified on device"
+            message = changed ? L("Backup restored and verified.") + " " + L("Some changes require a device restart.")
+                : L("This backup already matches the device. No changes were made.")
+            log("[restore] Verified imported document restored")
+            await reloadBackups()
+        } catch { failed(error); await reloadBackups() }
+    }
+
+    func discardImport(_ offer: PlistImportOffer) {
+        if let (inbox, entry) = offer.sharedSource {
+            do { try inbox.acknowledge(entry) }
+            catch { log("[share] Inbox cleanup failed") }
+        }
+    }
+
     func stage(_ draft: FieldDraft) throws {
-        let key = draft.key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { throw GestaltFailure("Enter a field key.") }
+        // Imported plist keys may legitimately contain surrounding whitespace
+        // or be empty. Editing their values must not rename those existing keys.
+        let preservesKey = draft.originalKey == draft.key && working?.extra[draft.key] != nil
+        let key = preservesKey ? draft.key : draft.key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard preservesKey || !key.isEmpty else { throw GestaltFailure("Enter a field key.") }
         guard var doc = working else { throw GestaltFailure("Load a document first.") }
         if draft.originalKey != key && doc.extra[key] != nil { throw GestaltFailure("That key already exists. Edit the existing field instead.") }
-        let value = try draft.kind.parse(draft.text)
+        let value = try draft.parsedValue()
         if let originalKey = draft.originalKey, originalKey != key { doc.set(nil, for: originalKey) }
         doc.set(value, for: key); working = doc
         // Explicit field edits take precedence: discard presets that would overwrite the key.
-        for capability in Capability.all where capability.keys.contains(key) { choices[capability.id] = .keep }
-        if [GestaltKeys.regionCode, GestaltKeys.regionInfo, GestaltKeys.legacyRegionInfo].contains(key) { regionID = "keep"; regionCodeID = "keep" }
-        if key == GestaltKeys.artwork { subtype = 0 }
-        if [GestaltKeys.artwork, "Z/dqyWS6OZTRy10UcmUAhw", "bbtR9jQx50Fv5Af/affNtA"].contains(key) { changesName = false }
+        let changedKeys = Set([key, draft.originalKey].compactMap { $0 })
+        for capability in Capability.all where !changedKeys.isDisjoint(with: capability.keys) { choices[capability.id] = .keep }
+        if !changedKeys.isDisjoint(with: [GestaltKeys.regionCode, GestaltKeys.regionInfo, GestaltKeys.legacyRegionInfo]) { regionID = "keep"; regionCodeID = "keep" }
+        resetLayoutPresets(overriddenBy: changedKeys)
+        if changedKeys.contains(GestaltKeys.modelNumber) { modelID = "keep" }
+        if !changedKeys.isDisjoint(with: [GestaltKeys.artwork, "Z/dqyWS6OZTRy10UcmUAhw", "bbtR9jQx50Fv5Af/affNtA"]) { changesName = false }
     }
     func removeField(_ key: String) {
         working?.set(nil, for: key)
         for capability in Capability.all where capability.keys.contains(key) { choices[capability.id] = .keep }
         if [GestaltKeys.regionCode, GestaltKeys.regionInfo, GestaltKeys.legacyRegionInfo].contains(key) { regionID = "keep"; regionCodeID = "keep" }
-        if key == GestaltKeys.artwork { subtype = 0 }
+        resetLayoutPresets(overriddenBy: [key])
+        if key == GestaltKeys.modelNumber { modelID = "keep" }
         if [GestaltKeys.artwork, "Z/dqyWS6OZTRy10UcmUAhw", "bbtR9jQx50Fv5Af/affNtA"].contains(key) { changesName = false }
     }
 
+    private func resetLayoutPresets(overriddenBy keys: Set<String>) {
+        // A subtype preset writes both the artwork member and the capability
+        // flag. Explicit edits to either field must win over that preset.
+        if !keys.isDisjoint(with: [GestaltKeys.artwork, "YlEtTtHlNesRBMal1CqRaA"]) { subtype = 0 }
+        // Restoring/removing the capability also restores its artwork subtype.
+        // Enabling only changes the flag, so it can coexist with artwork edits.
+        if keys.contains(GestaltKeys.artwork),
+           [.disable, .removeAdded].contains(choices["dynamicIsland"] ?? .keep) {
+            choices["dynamicIsland"] = .keep
+        }
+    }
+
     func apply() async {
-        guard !isBusy, let snapshot, let edited = preview, changeCount > 0 else { return }
+        guard !isBusy, let snapshot, let edited = preview else { return }
+        if (changesName || subtype != 0), let error = artworkEditingError { failed(error); return }
+        guard changeCount > 0 else { return }
         if changesName && modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { failed(GestaltFailure("Enter a model name before applying.")); return }
         isBusy = true
         defer { isBusy = false }
@@ -322,9 +522,9 @@ final class GestaltManager: ObservableObject {
             let result = try await files.commit(edited, expected: snapshot, originallyAbsentKeys: absentKeys)
             accept(result); needsRespring = result.source == .device
             status = result.source == .device ? "Changes verified on device" : "Local changes saved"
-            let changedFaceTimeAudio = !FaceTimeAudioCache.changes(from: snapshot.document, to: edited).isEmpty
+            let changedCacheOption = !DeviceCacheOptions.changes(from: snapshot.document, to: edited).isEmpty
             message = L(result.source == .device
-                        ? (changedFaceTimeAudio ? "FaceTime Audio flags written and verified. Restart the iPhone, then test an audio call." : "Write verified. Some features require a device restart.")
+                        ? (changedCacheOption ? "Write verified. Some features require a device restart." : "Write verified. Some features require a device restart.")
                         : "Local changes saved. Export the plist to keep a copy.")
             log(L(status)); await reloadBackups()
         } catch { failed(error); await reloadBackups() }
@@ -339,8 +539,45 @@ final class GestaltManager: ObservableObject {
     func reloadBackups() async {
         do { backups = try await files.backups() } catch { failed(error) }
     }
+    func restoreHardwareIdentity(from record: BackupRecord? = nil) async {
+        guard !isBusy, let before = snapshot else { return }
+        guard changeCount == 0 else {
+            failed(GestaltFailure("Save or discard your current changes before opening another plist."))
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let physical = GXCopyPhysicalHardwareIdentity()
+            guard let product = physical["hw.machine"], let board = physical["hw.model"] else {
+                throw GestaltFailure("This device's identity could not be verified. Read MobileGestalt on this device and try sharing again.")
+            }
+            let live: DocumentSnapshot
+            let result: DocumentSnapshot
+            if let record {
+                live = before
+                result = try await files.restoreHardwareIdentity(from: record, expected: live,
+                                                                 physicalProduct: product, physicalBoard: board)
+            } else {
+                live = try await files.loadDevice()
+                result = try await files.restoreHardwareIdentity(from: before, expected: live,
+                                                                 physicalProduct: product, physicalBoard: board)
+            }
+            logChanges(from: live.document, to: result.document, prefix: "[restore-hardware] ")
+            let changed = !result.document.matches(live.document)
+            accept(result)
+            needsRespring = needsRespring || changed
+            message = L(changed ? "Backup restored and verified." : "This backup already matches the device. No changes were made.")
+                + " " + L("Some changes require a device restart.")
+            await reloadBackups()
+        } catch { failed(error); await reloadBackups() }
+    }
     func restore(_ record: BackupRecord) async {
         guard !isBusy, let snapshot else { return }
+        guard changeCount == 0 else {
+            message = L("Save or discard your current changes before opening another plist.")
+            return
+        }
         isBusy = true; defer { isBusy = false }
         do {
             let data = try await files.backupData(record)
@@ -348,13 +585,20 @@ final class GestaltManager: ObservableObject {
             log("[restore] \(record.filename) · \(record.byteCount) bytes · reason=\(record.reason)")
             logChanges(from: snapshot.document, to: restored, prefix: "[restore-diff] ")
             let result = try await files.commit(restored, expected: snapshot, restoring: record)
-            accept(result); needsRespring = result.source == .device
-            message = L(result.source == .device ? "Backup restored and verified." : "Backup opened as a local document.")
+            let changed = !result.document.matches(snapshot.document)
+            accept(result); needsRespring = result.source == .device && (needsRespring || changed)
+            message = L(result.source == .device
+                        ? (changed ? "Backup restored and verified." : "This backup already matches the device. No changes were made.")
+                        : "Backup opened as a local document.")
             log(message ?? ""); await reloadBackups()
         } catch { failed(error); await reloadBackups() }
     }
     func openBackup(_ record: BackupRecord) async {
         guard !isBusy else { return }
+        guard changeCount == 0 else {
+            message = L("Save or discard your current changes before opening another plist.")
+            return
+        }
         isBusy = true; defer { isBusy = false }
         do {
             let data = try await files.backupData(record)
@@ -366,19 +610,23 @@ final class GestaltManager: ObservableObject {
         isBusy = true; defer { isBusy = false }
         do { try await files.deleteBackup(record); await reloadBackups() } catch { failed(error) }
     }
-    func exportBackup(_ record: BackupRecord) async -> URL? {
-        do { return try exportData(await files.backupData(record), name: record.filename) }
+    func exportBackup(_ record: BackupRecord) async -> TemporaryExport? {
+        do {
+            let data = try await files.backupExportData(record, sealingWith: { try DeviceBoundPlist.seal($0) })
+            return try exportData(data, name: record.filename)
+        }
         catch { failed(error); return nil }
     }
-    func exportDocument() -> URL? {
-        guard let doc = preview else { return nil }
-        do { return try exportData(doc.encoded(), name: "MobileGestalt-GestaltX.plist") }
+    func exportDocument() -> TemporaryExport? {
+        guard let doc = preview, let snapshot else { return nil }
+        do {
+            let plain = try doc.encoded()
+            let bytes = snapshot.source == .device || snapshot.ownershipVerified ? try DeviceBoundPlist.seal(plain) : plain
+            return try exportData(bytes, name: "MobileGestalt-GestaltX.plist")
+        }
         catch { failed(error); return nil }
     }
-    private func exportData(_ data: Data, name: String) throws -> URL {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let url = folder.appendingPathComponent(name); try data.write(to: url, options: .atomic)
-        return url
+    private func exportData(_ data: Data, name: String) throws -> TemporaryExport {
+        try TemporaryExport(data: data, name: name)
     }
 }

@@ -1,16 +1,34 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 huamidev
 import SwiftUI
-import UniformTypeIdentifiers
 
-struct SharedFile: Identifiable { let id = UUID(); let url: URL }
+private enum IncomingShareOffer {
+    case plist(PlistImportOffer)
+    case wallpaper(SharedWallpaperOffer)
+}
 
 struct ContentView: View {
     @StateObject private var model = GestaltManager()
-    @State private var importsFile = false
-    @State private var sharesFile: SharedFile?
+    @StateObject private var systemSettings = SystemSettingsModel()
+    @StateObject private var customizations = CustomizationModel()
+    @StateObject private var launchCatalog = LaunchArtworkCatalogModel()
+    @ObservedObject private var starPrompt = StarPromptController.shared
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var importOffer: PlistImportOffer?
+    @State private var showsImportConfirmation = false
+    @State private var wallpaperOffer: SharedWallpaperOffer?
+    @State private var showsWallpaperConfirmation = false
+    @State private var showsSharedWallpapers = false
+    @State private var isCheckingSharedImport = false
+    @State private var pendingSharedImport = false
+    @State private var capturingDirectImports = 0
+    @State private var sharesFile: TemporaryExport?
+    @State private var activeExport: TemporaryExport?
     @State private var showsChanges = false
     @State private var asksRespring = false
+    @State private var asksImportedRestore = false
+    @State private var showsShareNotice = false
+    @AppStorage("GestaltX.sharedImportNotice.v1") private var sharedImportNoticeShown = false
     @State private var selectedTab = 0
     @State private var didStart = false
     @State private var didAutoRead = false
@@ -24,8 +42,8 @@ struct ContentView: View {
             NavigationStack { tools }
                 .tabItem { Label(L("Tools"), systemImage: "square.grid.2x2") }.tag(0)
             NavigationStack { FieldsView() }
-                .tabItem { Label(L("Fields"), systemImage: "slider.horizontal.3") }.tag(1)
-            NavigationStack { BackupsView(share: { sharesFile = SharedFile(url: $0) }) }
+                .tabItem { Label(L("MG Control"), systemImage: "slider.horizontal.3") }.tag(1)
+            NavigationStack { BackupsView(share: presentShare) }
                 .tabItem { Label(L("Backups"), systemImage: "clock.arrow.circlepath") }.tag(2)
             NavigationStack { AboutView() }
                 .tabItem { Label(L("About"), systemImage: "info.circle") }.tag(3)
@@ -37,17 +55,23 @@ struct ContentView: View {
             NavigationStack { CategoryView(category: category) }.environmentObject(model)
         }
         #endif
-        .fileImporter(isPresented: $importsFile, allowedContentTypes: [.propertyList, .xml, .data]) { result in
-            switch result {
-            case .success(let url): Task { await model.open(url) }
-            case .failure(let error): model.message = error.localizedDescription
-            }
-        }
         .sheet(isPresented: Binding(get: { !acceptedWelcome && !isPreviewSession }, set: { _ in })) {
             WelcomeView { acceptedWelcome = true }
         }
-        .sheet(item: $sharesFile) { ShareSheet(url: $0.url) }
+        .sheet(isPresented: $starPrompt.isPresented, onDismiss: { starPrompt.sheetDismissed() }) {
+            StarPromptView(controller: starPrompt)
+        }
+        .sheet(item: $sharesFile, onDismiss: {
+            activeExport?.cleanUp()
+            activeExport = nil
+        }) { ShareSheet(export: $0) }
         .sheet(isPresented: $showsChanges) { ChangeReviewView().environmentObject(model) }
+        .sheet(isPresented: $showsSharedWallpapers) {
+            NavigationStack {
+                WallpapersView(model: customizations)
+                    .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L("Done")) { showsSharedWallpapers = false } } }
+            }
+        }
         .fullScreenCover(isPresented: $model.isRespringing) { NeoSpringView() }
         .alert(L("GestaltX"), isPresented: Binding(get: { model.message != nil && !showsChanges }, set: { if !$0 { model.message = nil } })) {
             Button(L("OK"), role: .cancel) { model.message = nil }
@@ -56,12 +80,123 @@ struct ContentView: View {
             Button(L("Cancel"), role: .cancel) {}
             Button(L("Respring")) { model.isRespringing = true }
         } message: { Text(L("This will attempt to restart SpringBoard using NeoSpring.")) }
+        .alert(L("Import Plist"), isPresented: $showsImportConfirmation) {
+            Button(L("Cancel"), role: .cancel) {
+                if let offer = importOffer { model.discardImport(offer) }
+                importOffer = nil
+                pendingSharedImport = true
+            }
+            Button(L("Import")) {
+                guard let offer = importOffer else { return }
+                isCheckingSharedImport = true
+                importOffer = nil
+                pendingSharedImport = true
+                Task {
+                    await model.acceptImport(offer)
+                    isCheckingSharedImport = false
+                    await resumeSharedImports()
+                }
+            }
+        } message: {
+            Text(verbatim: (importOffer?.name ?? "") + "\n\n" + L("This plist has been verified for this device. Import it?"))
+        }
+        .alert(L("Import Wallpaper"), isPresented: $showsWallpaperConfirmation) {
+            Button(L("Cancel"), role: .cancel) {
+                if let offer = wallpaperOffer {
+                    do { try offer.inbox.acknowledge(offer.entry) } catch { model.message = error.localizedDescription }
+                    offer.cleanUp()
+                }
+                wallpaperOffer = nil
+                pendingSharedImport = true
+            }
+            Button(L("Import")) {
+                guard let offer = wallpaperOffer else { return }
+                wallpaperOffer = nil
+                isCheckingSharedImport = true
+                Task {
+                    let imported = await customizations.importWallpaper(offer.file, id: offer.id)
+                    if imported {
+                        do {
+                            try offer.inbox.acknowledge(offer.entry)
+                            showsSharedWallpapers = true
+                        } catch { model.message = error.localizedDescription }
+                    } else {
+                        model.message = customizations.message
+                        customizations.message = nil
+                        offer.inbox.reject(offer.entry)
+                    }
+                    offer.cleanUp()
+                    pendingSharedImport = true
+                    isCheckingSharedImport = false
+                    await resumeSharedImports()
+                }
+            }
+        } message: {
+            Text(verbatim: (wallpaperOffer?.name ?? "") + "\n\n" + L("Import this wallpaper pack? It will be added to Wallpaper Settings."))
+        }
+        .alert(L("Restore Imported Plist"), isPresented: $asksImportedRestore) {
+            Button(L("Cancel"), role: .cancel) {}
+            Button(L("Restore"), role: .destructive) { Task { await model.restoreImportedPlist() } }
+        } message: {
+            Text(L("The current device file will be backed up before restoring. Restart the device afterward."))
+        }
+        .alert(L("Import Plist"), isPresented: $showsShareNotice) {
+            Button(L("OK"), role: .cancel) {}
+        } message: {
+            Text(L("Share this device's plist to GestaltX to edit its keys and values or restore a verified backup. Export a copy from GestaltX first to keep a device-bound proof."))
+        }
+        .onOpenURL { url in
+            if url.scheme?.lowercased() == SharedAppGroups.hostURLScheme.lowercased(), url.host == "share" {
+                Task { await checkSharedImport() }
+            } else if url.isFileURL {
+                do {
+                    // Own the bytes before deferring presentation. The same
+                    // durable confirmation queue handles Files and share events.
+                    let capture = SharedPlistInbox.isWallpaperName(url.lastPathComponent)
+                        ? SharedWallpaperImports.capture(url, in: try SharedWallpaperImports.inbox())
+                        : DirectFileImports.capture(url, in: try DirectFileImports.inbox())
+                    capturingDirectImports += 1
+                    pendingSharedImport = true
+                    Task {
+                        do {
+                            _ = try await withTaskCancellationHandler {
+                                try await capture.value
+                            } onCancel: { capture.cancel() }
+                            capturingDirectImports -= 1
+                            guard !Task.isCancelled else { return }
+                            await resumeSharedImports()
+                        } catch {
+                            capturingDirectImports -= 1
+                            if !Task.isCancelled && !(error is CancellationError) { model.message = error.localizedDescription }
+                        }
+                    }
+                } catch { model.message = error.localizedDescription }
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active && !isPreviewSession {
+                launchCatalog.refreshIfLoaded()
+                Task { await checkSharedImport() }
+            }
+        }
+        .onChange(of: canPresentSharedImport) { _, ready in
+            if ready && pendingSharedImport && !isCheckingSharedImport {
+                Task { await resumeSharedImports() }
+            }
+        }
+        .task(id: acceptedWelcome) {
+            if acceptedWelcome && !isPreviewSession { await launchCatalog.migrateBackups() }
+        }
         .onChange(of: acceptedWelcome) { _, accepted in
-            if accepted && !isPreviewSession { Task { await autoRead() } }
+            if accepted && !isPreviewSession {
+                Task { await autoRead(); showShareNoticeIfNeeded() }
+                starPrompt.startIfEligible()
+            }
         }
         .task {
             guard !didStart else { return }
             didStart = true
+            if acceptedWelcome && !isPreviewSession { starPrompt.startIfEligible() }
             await model.reloadBackups()
             #if targetEnvironment(simulator)
             let arguments = ProcessInfo.processInfo.arguments
@@ -72,18 +207,18 @@ struct ContentView: View {
                 selectedTab = tab
             }
             if arguments.contains("--preview-review") {
-                if !arguments.contains("--preview-facetime-audio") { model.choices["pencil"] = .enable }
+                if !arguments.contains("--preview-cache-option") { model.choices["pencil"] = .enable }
                 showsChanges = true
             }
-            if arguments.contains("--preview-facetime-audio") {
-                model.stageFaceTimeAudio(.enable)
+            if arguments.contains("--preview-cache-option") {
+                model.stageCacheOption(.enable)
             }
             if let flag = arguments.firstIndex(of: "--preview-category"), arguments.indices.contains(flag + 1) {
                 previewCategory = CapabilityCategory(rawValue: arguments[flag + 1])
             }
             if arguments.contains("--preview-document") || arguments.contains("--preview-tab") { return }
             #endif
-            if acceptedWelcome { await autoRead() }
+            if acceptedWelcome { await autoRead(); showShareNoticeIfNeeded() }
         }
     }
 
@@ -99,7 +234,113 @@ struct ContentView: View {
     private func autoRead() async {
         guard !didAutoRead else { return }
         didAutoRead = true
+        if await checkSharedImport() || model.hasDocument { return }
         await model.connect(showErrorAlert: false)
+    }
+
+    private var canPresentSharedImport: Bool {
+        acceptedWelcome && !model.isBusy && model.changeCount == 0 && importOffer == nil
+            && wallpaperOffer == nil && !showsWallpaperConfirmation && !showsSharedWallpapers
+            && !customizations.busy && !customizations.isPresenting && customizations.message == nil
+            && !showsImportConfirmation && !showsChanges && !model.isRespringing
+            && sharesFile == nil && !asksRespring && !asksImportedRestore
+            && !showsShareNotice && model.message == nil
+    }
+
+    private func resumeSharedImports() async {
+        guard acceptedWelcome, !isPreviewSession else { return }
+        if await checkSharedImport() { return }
+        // Initial automatic reading may have yielded to an import that was
+        // subsequently cancelled or rejected. Resume it when the queue empties.
+        if didAutoRead && !model.hasDocument && !model.isBusy {
+            await model.connect(showErrorAlert: false)
+        }
+    }
+
+    @discardableResult
+    private func checkSharedImport() async -> Bool {
+        guard acceptedWelcome else { return false }
+        guard !isCheckingSharedImport, importOffer == nil, wallpaperOffer == nil else { return true }
+        do {
+            let inboxes = [try DirectFileImports.inbox(), try SharedWallpaperImports.inbox()]
+                + SharedAppGroups.inboxes + SharedAppGroups.wallpaperInboxes
+            let entries = try SharedImportQueue.snapshot(in: inboxes)
+            guard !entries.isEmpty else {
+                pendingSharedImport = capturingDirectImports > 0
+                return pendingSharedImport
+            }
+            guard canPresentSharedImport else {
+                let firstNotice = !pendingSharedImport
+                pendingSharedImport = true
+                if model.changeCount > 0 && firstNotice && model.message == nil {
+                    model.message = L("A shared file is waiting. Save or discard your current changes, then import it.")
+                }
+                return true
+            }
+            pendingSharedImport = false
+            isCheckingSharedImport = true
+            defer { isCheckingSharedImport = false }
+            selectedTab = 0
+            sharedImportNoticeShown = true
+            let selection: SharedImportQueue.Selection<IncomingShareOffer> = await SharedImportQueue.next(in: entries) { inbox, entry in
+                guard canPresentSharedImport else { return .deferred(nil) }
+                if inbox.kind == .wallpaper {
+                    do { return .ready(.wallpaper(try await SharedWallpaperImports.prepare(entry, from: inbox))) }
+                    catch {
+                        if SharedPlistError.canRetry(error) { return .deferred(error.localizedDescription) }
+                        inbox.reject(entry)
+                        return .rejected(error.localizedDescription)
+                    }
+                }
+                switch await model.prepareSharedPlist(entry, from: inbox) {
+                case .ready(let offer): return .ready(.plist(offer))
+                case .deferred(let message): return .deferred(message)
+                case .rejected(let message): return .rejected(message)
+                }
+            }
+            switch selection {
+            case .ready(let offer):
+                // Verification may suspend while reading the device. Recheck
+                // presentation after that await; the unacknowledged inbox file
+                // remains available when the new modal/busy gate clears.
+                guard canPresentSharedImport else {
+                    if case .wallpaper(let wallpaper) = offer { wallpaper.cleanUp() }
+                    pendingSharedImport = true
+                    return true
+                }
+                pendingSharedImport = true
+                switch offer {
+                case .plist(let plist): importOffer = plist; showsImportConfirmation = true
+                case .wallpaper(let wallpaper): wallpaperOffer = wallpaper; showsWallpaperConfirmation = true
+                }
+            case .deferred(let message):
+                // A UI/busy gate can resume automatically. An unavailable device
+                // identity waits for the next foreground/share event, avoiding
+                // an isBusy -> retry -> isBusy loop on the same retained file.
+                pendingSharedImport = message == nil
+                if let message { model.message = message }
+            case .empty(let lastRejection):
+                pendingSharedImport = false
+                if let lastRejection { model.message = lastRejection }
+            }
+            return selection.blocksAutomaticRead
+        } catch {
+            model.message = error.localizedDescription
+            return true
+        }
+    }
+
+    private func showShareNoticeIfNeeded() {
+        guard !sharedImportNoticeShown, acceptedWelcome, !isPreviewSession,
+              importOffer == nil, model.message == nil, !pendingSharedImport else { return }
+        sharedImportNoticeShown = true
+        showsShareNotice = true
+    }
+
+    private func presentShare(_ export: TemporaryExport) {
+        guard sharesFile == nil, activeExport == nil else { export.cleanUp(); return }
+        activeExport = export
+        sharesFile = export
     }
 
     private var tools: some View {
@@ -116,8 +357,11 @@ struct ContentView: View {
                 Button { Task { await model.connect() } } label: {
                     Label(L(model.isBusy ? "Reading…" : model.hasDocument ? "Read Again" : "Read MobileGestalt"), systemImage: "arrow.clockwise")
                 }.disabled(model.isBusy || model.changeCount > 0)
-                Button { importsFile = true } label: { Label(L("Import Plist"), systemImage: "doc.badge.plus") }
-                    .disabled(model.isBusy || model.changeCount > 0)
+            }
+            Section(L("Device Pairing")) {
+                NavigationLink { DeviceConnectionView() } label: {
+                    Label(L("Pairing & Device Connection"), systemImage: "link.badge.plus")
+                }
             }
             Section("MobileGestalt") {
                 ForEach(CapabilityCategory.allCases) { category in
@@ -127,20 +371,43 @@ struct ContentView: View {
                     .disabled(!model.hasDocument || model.isBusy)
                 }
             }
+            Section(L("Customization")) {
+                NavigationLink { SystemSettingsView(model: systemSettings) } label: {
+                    Label(L("System Settings"), systemImage: "gearshape")
+                }.disabled(model.isBusy)
+                NavigationLink { WallpapersView(model: customizations) } label: {
+                    Label(L("Wallpaper Settings"), systemImage: "photo.on.rectangle.angled")
+                }.disabled(model.isBusy)
+                NavigationLink { LaunchArtworkApplicationsView(customizations: customizations, catalog: launchCatalog) } label: {
+                    Label(L("App Launch Images"), systemImage: "app.badge")
+                }
+                NavigationLink { AppSoundApplicationsView(customizations: customizations) } label: {
+                    Label(L("App Audio Library"), systemImage: "bell.badge")
+                }.disabled(model.isBusy)
+            }
             Section(L("Actions")) {
+                if model.snapshot?.source == .local && model.snapshot?.ownershipVerified == true {
+                    Button { asksImportedRestore = true } label: { Label(L("Restore Imported Plist"), systemImage: "arrow.uturn.backward") }
+                        .disabled(!model.canRestoreImportedPlist)
+                }
                 Button { showsChanges = true } label: {
                     HStack {
                         Label(L("Apply Changes"), systemImage: "checkmark")
                         Spacer()
                         if model.changeCount > 0 { Text(String(model.changeCount)).foregroundStyle(.secondary) }
                     }
-                }.disabled(model.changeCount == 0 || model.isBusy)
-                Button(L("Discard Changes"), role: .destructive) { model.clearStaged() }
-                    .disabled(model.changeCount == 0 || model.isBusy)
+                    .foregroundStyle(model.changeCount == 0 || model.isBusy ? Color(uiColor: .tertiaryLabel) : Color.blue)
+                }
+                .disabled(model.changeCount == 0 || model.isBusy)
+                Button(role: .destructive) { model.clearStaged() } label: {
+                    Label(L("Discard Changes"), systemImage: "xmark")
+                        .foregroundStyle(model.changeCount == 0 || model.isBusy ? Color(uiColor: .tertiaryLabel) : Color.red)
+                }
+                .disabled(model.changeCount == 0 || model.isBusy)
                 Button { Task { await model.backup() } } label: { Label(L("Create Backup"), systemImage: "externaldrive.badge.plus") }
                     .disabled(!model.hasDocument || model.isBusy)
                 Button {
-                    if let url = model.exportDocument() { sharesFile = SharedFile(url: url) }
+                    if let export = model.exportDocument() { presentShare(export) }
                 } label: { Label(L("Export Plist"), systemImage: "square.and.arrow.up") }
                     .disabled(!model.hasDocument || model.isBusy)
                 Button { asksRespring = true } label: { Label(L("Respring"), systemImage: "arrow.trianglehead.2.clockwise.rotate.90") }
@@ -159,6 +426,8 @@ struct ContentView: View {
 struct CategoryView: View {
     let category: CapabilityCategory
     @EnvironmentObject private var model: GestaltManager
+    @State private var asksInternalBuild = false
+    @State private var asksHardwareRestore = false
     var body: some View {
         Form {
             if category == .display {
@@ -167,11 +436,15 @@ struct CategoryView: View {
                         Text(L("Keep Current")).tag(0)
                         Text("iPhone 14 Pro · 2556").tag(2556)
                         Text("iPhone 14 Pro Max · 2796").tag(2796)
+                        Text("iPhone Air · 2736").tag(2736)
                         Text("iPhone 16 Pro · 2622").tag(2622)
                         Text("iPhone 16 Pro Max · 2868").tag(2868)
                     }
                     .onChange(of: model.subtype) { _, value in if value != 0 { model.choices["dynamicIsland"] = .keep } }
-                }
+                    if let error = model.artworkEditingError {
+                        Text(error.localizedDescription).font(.caption).foregroundStyle(.secondary)
+                    }
+                }.disabled(model.artworkEditingError != nil)
             }
             if category == .device {
                 Section(L("Device Identity")) {
@@ -180,9 +453,20 @@ struct CategoryView: View {
                         TextField(L("Model Name"), text: $model.modelName).autocorrectionDisabled()
                         Text(L("A device restart may be required.")).font(.caption).foregroundStyle(.secondary)
                     }
-                }
+                    if let error = model.artworkEditingError {
+                        Text(error.localizedDescription).font(.caption).foregroundStyle(.secondary)
+                    }
+                }.disabled(model.artworkEditingError != nil)
             }
             if category == .intelligence {
+                if model.snapshot?.source == .local && model.snapshot?.ownershipVerified == true {
+                    Section {
+                        Button(L("Restore Hardware Identity"), role: .destructive) { asksHardwareRestore = true }
+                            .disabled(model.changeCount > 0)
+                    } footer: {
+                        Text(L("Restore only the original product, board, CPU and model number from this backup. AI and region settings are kept. Restart and test Face ID and dictation afterward."))
+                    }
+                }
                 Section {
                     Picker(L("Region Code"), selection: $model.regionCodeID) {
                         ForEach(RegionPreset.all) { Text(L($0.title)).tag($0.id) }
@@ -202,6 +486,22 @@ struct CategoryView: View {
                 } footer: {
                     Text(L("Changing the sales-region suffix may cause verification tools to report a mismatch with factory information."))
                 }
+                Section {
+                    Picker(L("Model Number"), selection: $model.modelID) {
+                        ForEach(ModelPreset.all) { Text(L($0.title)).tag($0.id) }
+                    }
+                    HStack(alignment: .firstTextBaseline) {
+                        if model.modelID != "keep" {
+                            Text(L("A device restart may be required after changing the model number.")).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        Button(L("Revert")) { Task { await model.restoreCapability(ModelPreset.restoration) } }
+                            .font(.caption).buttonStyle(.borderless)
+                            .disabled(!model.canRestore(ModelPreset.restoration))
+                    }
+                } footer: {
+                    Text(L("Listed values apply to iPhone Air, iPhone 18 Pro and iPhone 18 Pro Max only. Choosing a model number that does not match your hardware can make verification tools report a mismatch."))
+                }
             }
             Section {
                 ForEach(Capability.all.filter { $0.category == category }) { capability in
@@ -209,11 +509,20 @@ struct CategoryView: View {
                     Picker(selection: Binding(
                         get: { model.choices[capability.id] ?? .keep },
                         set: {
+                            if capability.requiresEnableConfirmation, $0 == .enable,
+                               model.choices[capability.id] != .enable {
+                                asksInternalBuild = true
+                                return
+                            }
                             model.choices[capability.id] = $0
                             if capability.id == "dynamicIsland" && $0 != .keep { model.subtype = 0 }
                         }
                     )) {
-                        ForEach(PresetChoice.allCases) { Text(L($0.title)).tag($0) }
+                        ForEach(capability.availableChoices) { choice in
+                            let title = capability.id == "siriOnDevice" && choice == .disable
+                                ? "Restore Original" : choice.title
+                            Text(L(title)).tag(choice)
+                        }
                     } label: {
                         HStack(spacing: 6) {
                             Text(L(capability.title))
@@ -223,6 +532,9 @@ struct CategoryView: View {
                             }
                         }
                     }.pickerStyle(.menu)
+                    if capability.requiresEnableConfirmation || capability.id == "siriOnDevice" || capability.id == "siriAIMode" {
+                        Text(L(capability.detail)).font(.caption).foregroundStyle(.secondary)
+                    }
                     HStack(alignment: .firstTextBaseline) {
                         if (model.choices[capability.id] ?? .keep) != .keep {
                             Text(L(capability.effectHint)).font(.caption).foregroundStyle(.secondary)
@@ -234,7 +546,10 @@ struct CategoryView: View {
                     }
                     }
                 }
-                if category == .device { FaceTimeAudioPresetRow() }
+                if category == .device {
+                    AdditionalOptionsRow()
+                    WAPIPresetRow()
+                }
             } header: {
                 Text(L("Presets"))
             }
@@ -246,16 +561,31 @@ struct CategoryView: View {
             }
         }
         .navigationTitle(L(category.rawValue)).disabled(model.isBusy)
+        .alert(L("Restore Hardware Identity"), isPresented: $asksHardwareRestore) {
+            Button(L("Cancel"), role: .cancel) {}
+            Button(L("Restore"), role: .destructive) { Task { await model.restoreHardwareIdentity() } }
+        } message: {
+            Text(L("Restore only the original product, board, CPU and model number from this backup. AI and region settings are kept. Restart and test Face ID and dictation afterward."))
+        }
+        .alert(L("Enable Internal Build?"), isPresented: $asksInternalBuild) {
+            Button(L("Cancel"), role: .cancel) {}
+            Button(L("Enable"), role: .destructive) {
+                guard !model.isBusy, model.hasDocument else { return }
+                model.choices["storage"] = .enable
+            }
+        } message: {
+            Text(L("This stages the system-wide InternalBuild flag. It can affect system services beyond the storage screen. You can review the change before applying it."))
+        }
     }
 }
 
-struct FaceTimeAudioPresetRow: View {
+struct AdditionalOptionsRow: View {
     @EnvironmentObject private var model: GestaltManager
 
-    private var support: Result<FaceTimeAudioFlags, Error> {
+    private var support: Result<CachedOptionFlags, Error> {
         Result {
             guard let document = model.preview else { throw GestaltFailure("Load a document first.") }
-            return try FaceTimeAudioCache.flags(in: document)
+            return try DeviceCacheOptions.flags(in: document)
         }
     }
 
@@ -263,32 +593,54 @@ struct FaceTimeAudioPresetRow: View {
         switch support {
         case .success:
             VStack(alignment: .leading, spacing: 8) {
-                Picker(L("FaceTime Audio"), selection: Binding(
-                    get: { model.faceTimeAudioChoice },
-                    set: { model.stageFaceTimeAudio($0) }
+                Picker(L("Additional Options"), selection: Binding(
+                    get: { model.cacheOptionChoice },
+                    set: { model.stageCacheOption($0) }
                 )) {
-                    ForEach(FaceTimeAudioChoice.allCases) { choice in
+                    ForEach(CacheOptionChoice.allCases) { choice in
                         Text(choice.title).tag(choice)
                     }
                 }
                 .pickerStyle(.menu)
-                .accessibilityIdentifier("facetime-audio-choice")
+                .accessibilityIdentifier("cache-option-choice")
+                Text(L("Some changes require a device restart."))
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack(alignment: .firstTextBaseline) {
-                    if model.faceTimeAudioChoice != .keep {
-                        Text(L("A device restart may be required.")).font(.caption).foregroundStyle(.secondary)
-                    }
                     Spacer(minLength: 8)
-                    Button(L("Revert")) { Task { await model.restoreFaceTimeAudio() } }
+                    Button(L("Revert")) { Task { await model.restoreCacheOption() } }
                         .font(.caption).buttonStyle(.borderless)
-                        .disabled(!model.canRestoreFaceTimeAudio)
-                        .accessibilityIdentifier("facetime-audio-revert")
+                        .disabled(!model.canRestoreCacheOption)
+                        .accessibilityIdentifier("cache-option-revert")
                 }
             }
         case .failure(let error):
             VStack(alignment: .leading, spacing: 4) {
-                LabeledContent(L("FaceTime Audio")) { Text(L("Unsupported")).foregroundStyle(.secondary) }
+                LabeledContent(L("Additional Options")) { Text(L("Unsupported")).foregroundStyle(.secondary) }
                 Text(error.localizedDescription).font(.caption).foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+struct WAPIPresetRow: View {
+    @EnvironmentObject private var model: GestaltManager
+    private var supported: Bool {
+        guard let document = model.preview else { return false }
+        return (try? DeviceCacheOptions.wapi(in: document)) != nil
+    }
+    var body: some View {
+        if supported {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("WAPI", selection: Binding(get: { model.wapiChoice }, set: { model.stageWAPI($0) })) {
+                    ForEach(WAPIChoice.allCases) { choice in Text(choice.title).tag(choice) }
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("wapi-choice")
+                Text(L("Disabling may show a Wi-Fi entry instead of WLAN. Restart to apply."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        } else {
+            LabeledContent("WAPI") { Text(L("Unsupported")).foregroundStyle(.secondary) }
         }
     }
 }
@@ -299,12 +651,15 @@ struct FieldsView: View {
     @State private var draft: FieldDraft?
     @State private var deletesKey: String?
     private var keys: [String] {
-        (model.preview?.extra.keys.sorted() ?? []).filter { key in
-            search.isEmpty || key.localizedCaseInsensitiveContains(search) || valueText(key).localizedCaseInsensitiveContains(search)
+        // Preview applies staged presets. Reuse one snapshot while filtering so each value
+        // lookup does not rebuild the complete document on the main actor.
+        let extra = model.preview?.extra ?? [:]
+        return extra.keys.sorted().filter { key in
+            search.isEmpty || key.localizedCaseInsensitiveContains(search) || valueText(key, in: extra).localizedCaseInsensitiveContains(search)
         }
     }
-    private func valueText(_ key: String) -> String {
-        guard let value = model.preview?.extra[key] else { return "" }
+    private func valueText(_ key: String, in extra: [String: Any]? = nil) -> String {
+        guard let value = (extra ?? model.preview?.extra)?[key] else { return "" }
         let type = PlistValueKind.detect(value)
         if type == .data { return String(format: L("%lld bytes"), Int64((value as? Data)?.count ?? 0)) }
         return type.text(for: value)
@@ -312,14 +667,14 @@ struct FieldsView: View {
     var body: some View {
         List {
             if !model.hasDocument {
-                ContentUnavailableView(L("No Document Open"), systemImage: "doc.text.magnifyingglass", description: Text(L("Read or import a plist in Tools.")))
+                ContentUnavailableView(L("No Document Open"), systemImage: "doc.text.magnifyingglass", description: Text(L("Read MobileGestalt in Tools, or share this device's plist to GestaltX.")))
             } else {
                 Section {
                     ForEach(keys, id: \.self) { key in
                         Button {
                             guard let value = model.preview?.extra[key] else { return }
                             let kind = PlistValueKind.detect(value)
-                            draft = FieldDraft(originalKey: key, key: key, kind: kind, text: kind.text(for: value))
+                            draft = FieldDraft(originalKey: key, key: key, kind: kind, text: kind.text(for: value), originalValue: value)
                         } label: {
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack(alignment: .firstTextBaseline) {
@@ -338,7 +693,7 @@ struct FieldsView: View {
                 if keys.isEmpty { ContentUnavailableView.search(text: search) }
             }
         }
-        .navigationTitle(L("Fields"))
+        .navigationTitle(L("MG Control"))
         .searchable(text: $search, prompt: L("Search keys and values"))
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -454,15 +809,20 @@ struct ChangeReviewView: View {
 }
 
 struct BackupsView: View {
-    let share: (URL) -> Void
+    let share: (TemporaryExport) -> Void
     @EnvironmentObject private var model: GestaltManager
     @State private var restores: BackupRecord?
     @State private var deletes: BackupRecord?
+    @State private var hardwareRestore: BackupRecord?
     var body: some View {
         List {
             Section {
                 Button { Task { await model.backup() } } label: { Label(L("Create Backup"), systemImage: "plus.circle.fill") }
                     .disabled(!model.hasDocument || model.isBusy)
+            } footer: {
+                if model.changeCount > 0 {
+                    Text(L("Save or discard your current changes before opening another plist."))
+                }
             }
             if model.backups.isEmpty {
                 ContentUnavailableView(L("No Backups"), systemImage: "externaldrive.badge.timemachine", description: Text(L("A backup is created before each write.")))
@@ -480,12 +840,18 @@ struct BackupsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                         HStack {
                             Button(L("Open")) { Task { await model.openBackup(record) } }
+                                .disabled(model.changeCount > 0)
                             Spacer()
                             Button(L("Export")) { Task { if let url = await model.exportBackup(record) { share(url) } } }
                             Spacer()
                             Button(L("Restore")) { restores = record }
-                                .disabled(!model.hasDocument || (model.sourceIsDevice && record.source != .device))
+                                .disabled(model.changeCount > 0 || !model.hasDocument || (model.sourceIsDevice && record.source != .device))
                         }.font(.subheadline).buttonStyle(.borderless).padding(.top, 6)
+                        if record.source == .device && record.sha256 != nil {
+                            Button(L("Restore Hardware Identity")) { hardwareRestore = record }
+                                .font(.subheadline).buttonStyle(.borderless)
+                                .disabled(model.changeCount > 0 || !model.sourceIsDevice)
+                        }
                     }.padding(.vertical, 6)
                 }.swipeActions(allowsFullSwipe: false) { Button(L("Delete")) { deletes = record }.tint(.red) }
             }
@@ -496,16 +862,35 @@ struct BackupsView: View {
         .alert(L("Restore this backup?"), isPresented: Binding(get: { restores != nil }, set: { if !$0 { restores = nil } })) {
             Button(L("Cancel"), role: .cancel) { restores = nil }
             Button(L("Restore")) { if let record = restores { Task { await model.restore(record) } }; restores = nil }
+                .disabled(model.isBusy || model.changeCount > 0)
         } message: { Text(L("The current document is backed up first. Device restores are verified after writing.")) }
         .alert(L("Delete this backup?"), isPresented: Binding(get: { deletes != nil }, set: { if !$0 { deletes = nil } })) {
             Button(L("Cancel"), role: .cancel) { deletes = nil }
             Button(L("Delete"), role: .destructive) { if let record = deletes { Task { await model.deleteBackup(record) } }; deletes = nil }
         } message: { Text(L("This removes the local backup permanently. It does not change the device file.")) }
+        .alert(L("Restore Hardware Identity"), isPresented: Binding(get: { hardwareRestore != nil }, set: { if !$0 { hardwareRestore = nil } })) {
+            Button(L("Cancel"), role: .cancel) { hardwareRestore = nil }
+            Button(L("Restore"), role: .destructive) {
+                if let record = hardwareRestore { Task { await model.restoreHardwareIdentity(from: record) } }
+                hardwareRestore = nil
+            }
+        } message: {
+            Text(L("Restore only the original product, board, CPU and model number from this backup. AI and region settings are kept. Restart and test Face ID and dictation afterward."))
+        }
     }
 }
 
 struct SessionLogView: View {
     @EnvironmentObject private var model: GestaltManager
+    @State private var export: TemporaryExport?
+
+    private func shareLog() {
+        let text = model.logs.joined(separator: "\n") + "\n"
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let name = "GestaltX-session-\(Int(Date.now.timeIntervalSince1970)).log"
+        export = try? TemporaryExport(data: Data(text.utf8), name: name)
+    }
+
     var body: some View {
         ScrollView {
             Text(model.logs.isEmpty ? L("No activity yet.") : model.logs.joined(separator: "\n"))
@@ -514,7 +899,17 @@ struct SessionLogView: View {
                 .environment(\.layoutDirection, .leftToRight)
         }
         .navigationTitle(L("Session Log"))
-        .toolbar { Button(L("Clear")) { model.clearLog() } }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { shareLog() } label: { Image(systemName: "square.and.arrow.up") }
+                    .disabled(model.logs.isEmpty)
+                    .accessibilityLabel(L("Share Log"))
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(L("Clear")) { model.clearLog() }
+            }
+        }
+        .sheet(item: $export) { ShareSheet(export: $0) }
     }
 }
 
@@ -527,7 +922,11 @@ struct BrandMark: View {
 }
 extension Color { static let gestaltAccent = Color.blue }
 struct ShareSheet: UIViewControllerRepresentable {
-    let url: URL
-    func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: [url], applicationActivities: nil) }
+    let export: TemporaryExport
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: [export.url], applicationActivities: nil)
+        controller.completionWithItemsHandler = { _, _, _, _ in export.cleanUp() }
+        return controller
+    }
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
